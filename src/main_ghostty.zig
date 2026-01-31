@@ -14,6 +14,7 @@ const apprt = @import("apprt.zig");
 const App = @import("App.zig");
 const Ghostty = @import("main_c.zig").Ghostty;
 const state = &@import("global.zig").state;
+const internal_os = @import("os/main.zig");
 
 /// The return type for main() depends on the build artifact. The lib build
 /// also calls "main" in order to run the CLI actions, but it calls it as
@@ -24,6 +25,10 @@ const MainReturn = switch (build_config.artifact) {
 };
 
 pub fn main() !MainReturn {
+    // Force Mesa to report OpenGL 4.3 to enable SSBO support on 4.2 hardware
+    _ = internal_os.setenv("MESA_GL_VERSION_OVERRIDE", "4.3");
+    _ = internal_os.setenv("MESA_GLSL_VERSION_OVERRIDE", "430");
+
     // We first start by initializing our global state. This will setup
     // process-level state we need to run the terminal. The reason we use
     // a global is because the C API needs to be able to access this state;
