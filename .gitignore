@@ -1,4 +1,9 @@
-/.pkg/.local
+# Ignore everything in .pkg but allow traversing directories
+/.pkg/**/*
+!/.pkg/**/
+
+!/.pkg/.local/share/applications/com.mitchellh.ghostty*.desktop
+!/.pkg/.local/share/systemd/user/app-com.mitchellh.ghostty*.service
 
 *~
 .*.swp
