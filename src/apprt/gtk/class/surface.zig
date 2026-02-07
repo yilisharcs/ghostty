@@ -639,6 +639,9 @@ pub const Surface = extern struct {
         im_composing: bool = false,
         im_buf: [128]u8 = undefined,
         im_len: u7 = 0,
+        keyd_state: enum { idle, collecting } = .idle,
+        keyd_index: usize = 0,
+        keyd_buf: [3]u8 = undefined,
 
         /// True when we have a precision scroll in progress
         precision_scroll: bool = false,
@@ -1184,10 +1187,21 @@ pub const Surface = extern struct {
         keycode: c_uint,
         gtk_mods: gdk.ModifierType,
     ) bool {
+        const priv = self.private();
+
+        // keyd-specific composition handling
+        if (keyval == 0xff69) {
+            if (action == .press) {
+                priv.im_composing = true;
+                priv.keyd_state = .collecting;
+                priv.keyd_index = 0;
+            }
+            return true;
+        }
+
         //log.warn("keyEvent action={}", .{action});
         const event = ec_key.as(gtk.EventController).getCurrentEvent() orelse return false;
         const key_event = gobject.ext.cast(gdk.KeyEvent, event) orelse return false;
-        const priv = self.private();
 
         // The block below is all related to input method handling. See the function
         // comment for some high level details and then the comments within
@@ -1251,7 +1265,7 @@ pub const Surface = extern struct {
             // case. Input methods will handle basic character encoding like
             // typing "a" and we want to associate that with the key event.
             // So we have to check additional state to determine if we exit.
-            if (im_handled) {
+            if (im_handled or priv.im_composing) {
                 // If we are composing then we're in a preedit state and do
                 // not want to encode any keys. For example: type a deadkey
                 // such as single quote on a US international keyboard layout.
@@ -1316,6 +1330,47 @@ pub const Surface = extern struct {
             // Return the original physical key
             break :keycode w3c_key;
         };
+
+        if (physical_key == .compose) {
+            priv.im_composing = true;
+            priv.keyd_index = 0;
+            return true;
+        }
+
+        if (priv.im_composing and action == .press) {
+            const v: ?u8 = switch (keyval) {
+                '0'...'9' => @intCast(keyval - '0'),
+                'a'...'z' => @intCast(keyval - 'a' + 10),
+                'A'...'Z' => @intCast(keyval - 'A' + 10),
+                else => null,
+            };
+            if (v) |val| {
+                priv.keyd_buf[priv.keyd_index] = val;
+                priv.keyd_index += 1;
+                if (priv.keyd_index == 3) {
+                    priv.im_composing = false;
+                    const cp: u21 = 128 +
+                        @as(u21, priv.keyd_buf[0]) * 1296 +
+                        @as(u21, priv.keyd_buf[1]) * 36 +
+                        @as(u21, priv.keyd_buf[2]);
+                    var buf: [4]u8 = undefined;
+                    const len = std.unicode.utf8Encode(cp, &buf) catch 0;
+                    if (priv.core_surface) |surf| {
+                        _ = surf.keyCallback(.{
+                            .action = .press,
+                            .key = .unidentified,
+                            .mods = .{},
+                            .consumed_mods = .{},
+                            .composing = false,
+                            .utf8 = buf[0..len],
+                        }) catch {};
+                    }
+                }
+            } else {
+                priv.im_composing = false;
+            }
+            return true;
+        }
 
         // Get our modifier for the event
         const mods: input.Mods = gtk_key.eventMods(
@@ -3068,6 +3123,52 @@ pub const Surface = extern struct {
         const priv = self.private();
         const str = std.mem.sliceTo(bytes, 0);
 
+        if (priv.keyd_state == .collecting) {
+            if (str.len > 0) {
+                const c = str[0];
+                const val: ?u8 = switch (c) {
+                    '0'...'9' => c - '0',
+                    'a'...'z' => c - 'a' + 10,
+                    'A'...'Z' => c - 'A' + 10,
+                    else => null,
+                };
+
+                if (val) |v| {
+                    priv.keyd_buf[priv.keyd_index] = v;
+                    priv.keyd_index += 1;
+                    if (priv.keyd_index == 3) {
+                        const cp: u21 = 128 +
+                            @as(u21, priv.keyd_buf[0]) * 1296 +
+                            @as(u21, priv.keyd_buf[1]) * 36 +
+                            @as(u21, priv.keyd_buf[2]);
+
+                        if (std.unicode.utf8Encode(cp, &priv.im_buf)) |len| {
+                            const decoded = priv.im_buf[0..len];
+                            if (priv.core_surface) |surf| {
+                                _ = surf.keyCallback(.{
+                                    .action = .press,
+                                    .key = .unidentified,
+                                    .mods = .{},
+                                    .consumed_mods = .{},
+                                    .composing = false,
+                                    .utf8 = decoded,
+                                }) catch {};
+                            }
+                        } else |_| {}
+                        priv.im_len = 0;
+                        priv.im_composing = false;
+                        priv.keyd_state = .idle;
+                    }
+                    return;
+                } else {
+                    priv.keyd_state = .idle;
+                    priv.im_composing = false;
+                }
+            }
+        }
+
+        if (priv.im_composing) return;
+
         // log.debug("GTKIM: input commit composing={} keyevent={} str={s}", .{
         //     self.im_composing,
         //     self.in_keyevent,
@@ -3177,7 +3278,8 @@ pub const Surface = extern struct {
         // Setup our input method. We do this here because this will
         // create a strong reference back to ourself and we want to be
         // able to release that in unrealize.
-        priv.im_context.as(gtk.IMContext).setClientWidget(self.as(gtk.Widget));
+        const root = priv.gl_area.as(gtk.Widget).getRoot();
+        priv.im_context.as(gtk.IMContext).setClientWidget(if (root) |r| r.as(gtk.Widget) else priv.gl_area.as(gtk.Widget));
     }
 
     fn glareaUnrealize(

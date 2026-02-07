@@ -174,6 +174,7 @@ pub const Key = enum(c_int) {
     shift_right,
     space,
     tab,
+    compose,
     convert,
     kana_mode,
     non_convert,
@@ -405,6 +406,7 @@ pub const Key = enum(c_int) {
 
     /// True if this key represents a printable character.
     pub fn printable(self: Key) bool {
+        if (self == .compose) return false;
         return switch (self) {
             inline else => |tag| {
                 return comptime result: {
@@ -687,6 +689,7 @@ pub const Key = enum(c_int) {
             .intl_backslash,
             .intl_ro,
             .intl_yen,
+            .compose,
             .convert,
             .kana_mode,
             .non_convert,
